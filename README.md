@@ -26,8 +26,21 @@ You can leave it running while you grab lunch or sleep - it just keeps going unt
 
 ## Installation
 
+Claude-fsd runs entirely from source without npm dependencies:
+
 ```bash
-npm install -g claude-fsd
+git clone https://github.com/samjtro/claude-fsd.git
+cd claude-fsd
+./bootstrap.sh  # Automated setup with prompts
+```
+
+Manual installation:
+```bash
+git clone https://github.com/samjtro/claude-fsd.git
+cd claude-fsd
+chmod +x bin/*
+echo 'export PATH="'$(pwd)'/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
 ## Quick Start
@@ -115,12 +128,12 @@ This isn't sci-fi level "sleep through the entire project" automation - it's mor
 ## Requirements
 
 ### Required
-- Node.js >= 14.0.0
 - Unix-like environment (macOS, Linux)
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude` command)
 
 ### Optional (but recommended)
-- [Codex](https://github.com/Codex-ai/codex) - For enhanced code review capabilities
+- [Codex CLI](https://github.com/openai/codex) - For enhanced code review (set up via bootstrap script)
+- Node.js 22+ - Only needed if you want Codex CLI features (claude-fsd itself is pure bash)
 - OpenAI API key - For Codex features (set `OPENAI_API_KEY` environment variable)
 
 ## Project Structure

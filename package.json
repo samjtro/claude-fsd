@@ -1,31 +1,28 @@
 {
   "name": "claude-fsd",
-  "version": "1.3.9",
+  "version": "1.4.0",
   "description": "Claude Full Self Drive tools for autonomous AI-powered development",
-  "bin": {
-    "claude-fsd": "bin/claude-fsd",
-    "claudefsd": "bin/claudefsd",
-    "claudefsd-check-dependencies": "bin/claudefsd-check-dependencies",
-    "claudefsd-dev": "bin/claudefsd-dev",
-    "claudefsd-analyze-brief": "bin/claudefsd-analyze-brief",
-    "claudefsd-create-plan": "bin/claudefsd-create-plan"
+  "private": true,
+  "scripts": {
+    "test": "./test-failure-detection.sh",
+    "bootstrap": "./bootstrap.sh"
   },
-  "files": [
-    "bin/"
-  ],
   "keywords": [
     "claude",
     "development",
     "project-management",
-    "cli"
+    "cli",
+    "source-install",
+    "ai-development"
   ],
   "author": "",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/willer/claude-fsd.git"
+    "url": "git+https://github.com/samjtro/claude-fsd.git"
   },
-  "engines": {
-    "node": ">=14.0.0"
+  "homepage": "https://github.com/samjtro/claude-fsd#readme",
+  "bugs": {
+    "url": "https://github.com/samjtro/claude-fsd/issues"
   }
 }

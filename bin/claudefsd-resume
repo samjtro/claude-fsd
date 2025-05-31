@@ -1,0 +1,324 @@
+#!/bin/bash
+
+# Claude FSD Resume - Resume paused development with context restoration
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+print_success() { echo -e "${GREEN}✅ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_error() { echo -e "${RED}❌ $1${NC}"; }
+print_context() { echo -e "${CYAN}📋 $1${NC}"; }
+
+# Function to load saved state
+load_state() {
+    local state_file=".claudefsd-state"
+    
+    if [ -f "$state_file" ]; then
+        source "$state_file"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to show saved context
+show_saved_context() {
+    local state_file=".claudefsd-state"
+    
+    if [ ! -f "$state_file" ]; then
+        print_warning "No saved state found"
+        return 1
+    fi
+    
+    source "$state_file"
+    
+    print_context "Saved Context from $PAUSED_AT"
+    echo "  📁 Working directory: $WORKING_DIRECTORY"
+    echo "  🌿 Git branch: $CURRENT_BRANCH"
+    echo "  📊 Progress: $COMPLETED_TASKS/$TOTAL_TASKS tasks completed"
+    
+    if [ "$NEXT_TASK" != "no open tasks" ]; then
+        echo "  🎯 Next task: $NEXT_TASK"
+    else
+        echo "  ✨ All tasks completed!"
+    fi
+    
+    if [ "$GIT_STATUS" != "no git" ] && [ -n "$GIT_STATUS" ]; then
+        echo "  🔧 Working directory had changes when paused"
+    fi
+    
+    echo
+}
+
+# Function to show recent progress
+show_recent_progress() {
+    print_context "Recent Development Activity"
+    
+    # Show recent commits
+    if [ -d ".git" ]; then
+        local recent_commits=$(git log --oneline -5 2>/dev/null || true)
+        if [ -n "$recent_commits" ]; then
+            echo "Recent commits:"
+            echo "$recent_commits" | sed 's/^/  • /'
+        fi
+    fi
+    
+    # Show recent log files
+    if [ -d "logs" ]; then
+        local recent_logs=$(ls -t logs/claude-*.txt 2>/dev/null | head -3)
+        if [ -n "$recent_logs" ]; then
+            echo ""
+            echo "Recent development sessions:"
+            echo "$recent_logs" | while read -r log; do
+                local timestamp=$(basename "$log" | sed 's/claude-//' | sed 's/.txt$//' | sed 's/-[a-z]*$//')
+                local formatted_time=$(echo "$timestamp" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
+                echo "  • $formatted_time"
+            done
+        fi
+    fi
+    
+    echo
+}
+
+# Function to check for conflicts or issues
+check_for_issues() {
+    local issues=0
+    
+    print_context "Pre-Resume Checks"
+    
+    # Check if we're in the right directory
+    if load_state; then
+        if [ "$(pwd)" != "$WORKING_DIRECTORY" ]; then
+            print_warning "Current directory differs from saved state"
+            echo "  Saved: $WORKING_DIRECTORY"
+            echo "  Current: $(pwd)"
+            issues=$((issues + 1))
+        fi
+        
+        # Check if branch changed
+        local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')
+        if [ "$current_branch" != "$CURRENT_BRANCH" ]; then
+            print_warning "Git branch changed since pause"
+            echo "  Saved: $CURRENT_BRANCH"
+            echo "  Current: $current_branch"
+            issues=$((issues + 1))
+        fi
+    fi
+    
+    # Check for running processes
+    local running_processes=$(pgrep -f "claudefsd-dev" 2>/dev/null || true)
+    if [ -n "$running_processes" ]; then
+        print_error "Development session already running (PID: $running_processes)"
+        issues=$((issues + 1))
+    fi
+    
+    # Check for required files
+    if [ ! -f "docs/PLAN.md" ]; then
+        print_error "docs/PLAN.md not found"
+        issues=$((issues + 1))
+    fi
+    
+    if [ "$issues" -eq 0 ]; then
+        print_success "All checks passed"
+    else
+        print_warning "Found $issues potential issues"
+    fi
+    
+    echo
+    return $issues
+}
+
+# Function to suggest next actions
+suggest_next_actions() {
+    print_context "Suggested Next Actions"
+    
+    # Check plan status
+    if [ -f "docs/PLAN.md" ]; then
+        local open_tasks=$(grep "^\s*-\s*\[\s\]" "docs/PLAN.md" | head -3)
+        local in_progress=$(grep "^\s*-\s*\[~\]" "docs/PLAN.md" | head -3)
+        
+        if [ -n "$in_progress" ]; then
+            echo "Continue in-progress tasks:"
+            echo "$in_progress" | sed 's/^\s*-\s*\[~\]/  🔄/'
+            echo
+        fi
+        
+        if [ -n "$open_tasks" ]; then
+            echo "Next open tasks:"
+            echo "$open_tasks" | sed 's/^\s*-\s*\[\s\]/  📝/' | head -3
+            echo
+        fi
+        
+        if [ -z "$open_tasks" ] && [ -z "$in_progress" ]; then
+            print_success "All tasks appear to be completed!"
+            echo "  Consider reviewing the project or adding new features"
+            echo
+        fi
+    fi
+    
+    # Git suggestions
+    if [ -d ".git" ]; then
+        local status=$(git status --porcelain 2>/dev/null)
+        if [ -n "$status" ]; then
+            echo "Git actions needed:"
+            echo "  📝 Review working directory changes"
+            echo "  💾 Consider committing current progress"
+            echo
+        fi
+    fi
+}
+
+# Function to start development
+start_development() {
+    print_info "Starting development session..."
+    
+    # Clear old state file
+    rm -f ".claudefsd-state"
+    
+    # Start development
+    exec "$(dirname "$0")/claudefsd-dev"
+}
+
+# Function to show resume options
+show_resume_options() {
+    echo "Resume options:"
+    echo "  1) Continue development (claudefsd-dev)"
+    echo "  2) Interactive mode (claude-fsd)"
+    echo "  3) Review plan first (edit docs/PLAN.md)"
+    echo "  4) Check status (claudefsd-status)"
+    echo "  5) Cancel"
+    echo
+}
+
+# Main function
+main() {
+    local dry_run=false
+    local auto_start=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --dry-run|-n)
+                dry_run=true
+                shift
+                ;;
+            --auto|-a)
+                auto_start=true
+                shift
+                ;;
+            --help|-h)
+                echo "Usage: claudefsd-resume [OPTIONS]"
+                echo
+                echo "Resume paused claude-fsd development sessions"
+                echo
+                echo "Options:"
+                echo "  --dry-run, -n   Show context without resuming"
+                echo "  --auto, -a      Auto-start development without prompting"
+                echo "  --help, -h      Show this help message"
+                echo
+                echo "Examples:"
+                echo "  claudefsd-resume           # Interactive resume"
+                echo "  claudefsd-resume --dry-run # Show context only"
+                echo "  claudefsd-resume --auto    # Auto-start development"
+                exit 0
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+    
+    echo -e "${BLUE}Claude FSD Resume${NC}"
+    echo -e "${BLUE}=================${NC}"
+    echo
+    
+    # Check if we're in a claude-fsd project
+    if [ ! -f "BRIEF.md" ] && [ ! -d "docs" ]; then
+        print_warning "This doesn't appear to be a claude-fsd project directory"
+        print_info "Navigate to your project directory first"
+        exit 1
+    fi
+    
+    # Show saved context if available
+    if show_saved_context; then
+        show_recent_progress
+    else
+        print_info "No saved state found, showing current project status"
+        # Run status command if available
+        if [ -f "$(dirname "$0")/claudefsd-status" ]; then
+            "$(dirname "$0")/claudefsd-status"
+        fi
+    fi
+    
+    # If dry run, just show info and exit
+    if [ "$dry_run" = true ]; then
+        suggest_next_actions
+        print_info "Dry run complete. Use 'claudefsd-resume' to actually resume."
+        exit 0
+    fi
+    
+    # Check for issues
+    if ! check_for_issues; then
+        if [ "$auto_start" = false ]; then
+            read -p "Continue despite issues? [y/N]: " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_info "Resume cancelled"
+                exit 1
+            fi
+        fi
+    fi
+    
+    suggest_next_actions
+    
+    # Auto start or prompt for action
+    if [ "$auto_start" = true ]; then
+        start_development
+    else
+        show_resume_options
+        read -p "Enter your choice [1]: " choice
+        choice=${choice:-1}
+        
+        case $choice in
+            1)
+                start_development
+                ;;
+            2)
+                print_info "Starting interactive mode..."
+                exec "$(dirname "$0")/claude-fsd"
+                ;;
+            3)
+                print_info "Opening plan for review..."
+                ${EDITOR:-nano} "docs/PLAN.md"
+                echo
+                print_info "Plan reviewed. Run 'claudefsd-resume' again to continue."
+                ;;
+            4)
+                print_info "Checking project status..."
+                "$(dirname "$0")/claudefsd-status"
+                ;;
+            5)
+                print_info "Resume cancelled"
+                exit 0
+                ;;
+            *)
+                print_error "Invalid choice"
+                exit 1
+                ;;
+        esac
+    fi
+}
+
+# Run main function
+main "$@"

@@ -130,17 +130,22 @@ open_with_editor() {
 # Check dependencies first
 check_dependencies
 
-# Function to check for updates (non-blocking)
+# Function to check for updates (git-based)
 check_for_updates() {
-    # Only check if we can reach npm registry quickly
-    if timeout 2 npm view claude-fsd version >/dev/null 2>&1; then
-        local current_version=$(npm list -g claude-fsd --depth=0 2>/dev/null | grep claude-fsd | sed 's/.*@//')
-        local latest_version=$(timeout 2 npm view claude-fsd version 2>/dev/null)
-        
-        if [ -n "$current_version" ] && [ -n "$latest_version" ] && [ "$current_version" != "$latest_version" ]; then
-            echo -e "${YELLOW}📦 Update available: claude-fsd $current_version → $latest_version${NC}"
-            echo -e "${YELLOW}   Run: npm update -g claude-fsd${NC}"
-            echo
+    # Only check if we're in a git repository and can reach remote
+    if [ -d ".git" ] && git remote get-url origin >/dev/null 2>&1; then
+        if timeout 3 git fetch --dry-run >/dev/null 2>&1; then
+            local current_commit=$(git rev-parse HEAD 2>/dev/null)
+            local remote_commit=$(git rev-parse origin/main 2>/dev/null || git rev-parse origin/master 2>/dev/null || echo "")
+            
+            if [ -n "$remote_commit" ] && [ "$current_commit" != "$remote_commit" ]; then
+                local commits_behind=$(git rev-list --count HEAD..origin/main 2>/dev/null || git rev-list --count HEAD..origin/master 2>/dev/null || echo "0")
+                if [ "$commits_behind" -gt 0 ]; then
+                    echo -e "${YELLOW}📦 Update available: $commits_behind commits behind remote${NC}"
+                    echo -e "${YELLOW}   Run: git pull${NC}"
+                    echo
+                fi
+            fi
         fi
     fi
 }

@@ -1,0 +1,487 @@
+#!/bin/bash
+
+# Claude FSD Logs - Advanced log analysis and monitoring
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+print_success() { echo -e "${GREEN}✅ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_error() { echo -e "${RED}❌ $1${NC}"; }
+print_header() { echo -e "${MAGENTA}$1${NC}"; }
+
+# Function to show help
+show_help() {
+    echo "Usage: claudefsd-logs [COMMAND] [OPTIONS]"
+    echo
+    echo "Commands:"
+    echo "  list                List all available log files"
+    echo "  tail [AGENT]        Tail the latest log (agent: planner, developer, reviewer, tester)"
+    echo "  show [FILE]         Show specific log file"
+    echo "  errors [COUNT]      Show recent errors (default: 10)"
+    echo "  analyze [SESSION]   Analyze a complete development session"
+    echo "  clean [DAYS]        Clean logs older than specified days (default: 30)"
+    echo "  summary             Show summary of recent activity"
+    echo "  search PATTERN      Search for pattern in recent logs"
+    echo "  watch               Watch for new log entries in real-time"
+    echo
+    echo "Options:"
+    echo "  --help, -h         Show this help message"
+    echo "  --verbose, -v      Verbose output"
+    echo "  --follow, -f       Follow log files (for tail command)"
+    echo
+    echo "Examples:"
+    echo "  claudefsd-logs list                    # List all log files"
+    echo "  claudefsd-logs tail developer          # Tail latest developer log"
+    echo "  claudefsd-logs errors 20               # Show last 20 errors"
+    echo "  claudefsd-logs search \"error\"          # Search for 'error' in logs"
+    echo "  claudefsd-logs analyze 20250131_143022 # Analyze specific session"
+}
+
+# Function to list all log files
+list_logs() {
+    if [ ! -d "logs" ]; then
+        print_error "No logs directory found"
+        return 1
+    fi
+    
+    print_header "📁 Available Log Files"
+    echo
+    
+    local log_files=$(ls -t logs/claude-*.txt 2>/dev/null || true)
+    
+    if [ -z "$log_files" ]; then
+        print_warning "No log files found"
+        return 0
+    fi
+    
+    # Group by session
+    local current_session=""
+    echo "$log_files" | while read -r log; do
+        local basename_log=$(basename "$log")
+        local session=$(echo "$basename_log" | sed 's/claude-\([0-9_]*\)-.*/\1/')
+        local agent=$(echo "$basename_log" | sed 's/claude-[0-9_]*-\([^.]*\)\.txt/\1/')
+        local size=$(stat -f%z "$log" 2>/dev/null || stat -c%s "$log" 2>/dev/null || echo "0")
+        local formatted_size=$(numfmt --to=iec "$size" 2>/dev/null || echo "${size}B")
+        local time=$(echo "$session" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
+        
+        if [ "$session" != "$current_session" ]; then
+            if [ -n "$current_session" ]; then
+                echo
+            fi
+            echo -e "${CYAN}📅 Session: $time${NC}"
+            current_session="$session"
+        fi
+        
+        # Color code by agent type
+        case "$agent" in
+            planner)   echo -e "  🧠 ${BLUE}planner${NC}   - $formatted_size" ;;
+            developer) echo -e "  👨‍💻 ${GREEN}developer${NC} - $formatted_size" ;;
+            reviewer)  echo -e "  👁️  ${YELLOW}reviewer${NC}  - $formatted_size" ;;
+            tester)    echo -e "  🧪 ${MAGENTA}tester${NC}    - $formatted_size" ;;
+            *)         echo -e "  📄 $agent - $formatted_size" ;;
+        esac
+    done
+}
+
+# Function to tail logs
+tail_logs() {
+    local agent="${1:-developer}"
+    local follow="${2:-false}"
+    
+    if [ ! -d "logs" ]; then
+        print_error "No logs directory found"
+        return 1
+    fi
+    
+    local pattern="claude-*-${agent}.txt"
+    local latest_log=$(ls -t logs/${pattern} 2>/dev/null | head -1)
+    
+    if [ -z "$latest_log" ]; then
+        print_error "No ${agent} logs found"
+        return 1
+    fi
+    
+    print_info "Tailing: $latest_log"
+    
+    if [ "$follow" = "true" ]; then
+        tail -f "$latest_log"
+    else
+        tail -50 "$latest_log"
+    fi
+}
+
+# Function to show specific log
+show_log() {
+    local file="$1"
+    
+    if [ ! -f "$file" ]; then
+        # Try to find the file in logs directory
+        if [ -f "logs/$file" ]; then
+            file="logs/$file"
+        else
+            print_error "Log file not found: $file"
+            return 1
+        fi
+    fi
+    
+    print_info "Showing: $file"
+    echo
+    
+    # Use less with color support if available
+    if command -v less >/dev/null 2>&1; then
+        less -R "$file"
+    else
+        cat "$file"
+    fi
+}
+
+# Function to show recent errors
+show_errors() {
+    local count="${1:-10}"
+    
+    if [ ! -d "logs" ]; then
+        print_error "No logs directory found"
+        return 1
+    fi
+    
+    print_header "🚨 Recent Errors (showing last $count)"
+    echo
+    
+    local recent_logs=$(ls -t logs/claude-*.txt 2>/dev/null | head -20)
+    
+    if [ -z "$recent_logs" ]; then
+        print_warning "No log files found"
+        return 0
+    fi
+    
+    local error_count=0
+    echo "$recent_logs" | while read -r log && [ "$error_count" -lt "$count" ]; do
+        local errors=$(grep -n -i "error\|fail\|exception\|critical" "$log" 2>/dev/null || true)
+        
+        if [ -n "$errors" ]; then
+            local basename_log=$(basename "$log")
+            local session=$(echo "$basename_log" | sed 's/claude-\([0-9_]*\)-.*/\1/')
+            local agent=$(echo "$basename_log" | sed 's/claude-[0-9_]*-\([^.]*\)\.txt/\1/')
+            local time=$(echo "$session" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
+            
+            echo -e "${RED}📄 $time ($agent):${NC}"
+            echo "$errors" | head -5 | sed 's/^/  /' | while read -r line; do
+                error_count=$((error_count + 1))
+                echo "$line"
+                if [ "$error_count" -ge "$count" ]; then
+                    break
+                fi
+            done
+            echo
+        fi
+    done
+}
+
+# Function to analyze a complete development session
+analyze_session() {
+    local session="$1"
+    
+    if [ -z "$session" ]; then
+        print_error "Session timestamp required (e.g., 20250131_143022)"
+        return 1
+    fi
+    
+    print_header "📊 Session Analysis: $session"
+    echo
+    
+    local session_logs=$(ls logs/claude-${session}-*.txt 2>/dev/null || true)
+    
+    if [ -z "$session_logs" ]; then
+        print_error "No logs found for session: $session"
+        return 1
+    fi
+    
+    # Show session overview
+    local formatted_time=$(echo "$session" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
+    echo -e "${CYAN}🕐 Session Time: $formatted_time${NC}"
+    echo
+    
+    # Analyze each agent's contribution
+    echo "$session_logs" | while read -r log; do
+        local agent=$(basename "$log" | sed 's/claude-[0-9_]*-\([^.]*\)\.txt/\1/')
+        local size=$(stat -f%z "$log" 2>/dev/null || stat -c%s "$log" 2>/dev/null || echo "0")
+        local formatted_size=$(numfmt --to=iec "$size" 2>/dev/null || echo "${size}B")
+        local lines=$(wc -l < "$log" 2>/dev/null || echo "0")
+        
+        case "$agent" in
+            planner)   echo -e "🧠 ${BLUE}Planner${NC}: $lines lines, $formatted_size" ;;
+            developer) echo -e "👨‍💻 ${GREEN}Developer${NC}: $lines lines, $formatted_size" ;;
+            reviewer)  echo -e "👁️  ${YELLOW}Reviewer${NC}: $lines lines, $formatted_size" ;;
+            tester)    echo -e "🧪 ${MAGENTA}Tester${NC}: $lines lines, $formatted_size" ;;
+        esac
+        
+        # Show key outputs
+        if [ "$agent" = "planner" ]; then
+            local task=$(grep -o "<task_description>.*</task_description>" "$log" 2>/dev/null | sed 's/<[^>]*>//g' | head -1)
+            if [ -n "$task" ]; then
+                echo "  📋 Task: $(echo "$task" | cut -c1-60)..."
+            fi
+        elif [ "$agent" = "developer" ]; then
+            local changes=$(grep -A5 "<changes>" "$log" 2>/dev/null | head -3 | tail -2)
+            if [ -n "$changes" ]; then
+                echo "  🔧 Changes: $(echo "$changes" | tr '\n' ' ' | cut -c1-60)..."
+            fi
+        elif [ "$agent" = "tester" ]; then
+            local status=$(grep "Task Status:" "$log" 2>/dev/null | head -1)
+            if [ -n "$status" ]; then
+                echo "  ✅ Status: $status"
+            fi
+        fi
+    done
+    
+    echo
+    
+    # Check for errors in this session
+    local error_count=0
+    echo "$session_logs" | while read -r log; do
+        local errors=$(grep -c -i "error\|fail\|exception" "$log" 2>/dev/null || echo "0")
+        error_count=$((error_count + errors))
+    done
+    
+    if [ "$error_count" -gt 0 ]; then
+        print_warning "Found $error_count potential errors in this session"
+    else
+        print_success "No errors detected in this session"
+    fi
+}
+
+# Function to clean old logs
+clean_logs() {
+    local days="${1:-30}"
+    
+    if [ ! -d "logs" ]; then
+        print_warning "No logs directory found"
+        return 0
+    fi
+    
+    print_info "Cleaning logs older than $days days..."
+    
+    local old_logs=$(find logs -name "claude-*.txt" -mtime +$days 2>/dev/null || true)
+    
+    if [ -z "$old_logs" ]; then
+        print_success "No old logs found"
+        return 0
+    fi
+    
+    local count=$(echo "$old_logs" | wc -l)
+    echo "Found $count log files older than $days days:"
+    echo "$old_logs" | sed 's/^/  /'
+    echo
+    
+    read -p "Delete these files? [y/N]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "$old_logs" | xargs rm -f
+        print_success "Deleted $count old log files"
+    else
+        print_info "Cleanup cancelled"
+    fi
+}
+
+# Function to search logs
+search_logs() {
+    local pattern="$1"
+    
+    if [ -z "$pattern" ]; then
+        print_error "Search pattern required"
+        return 1
+    fi
+    
+    if [ ! -d "logs" ]; then
+        print_error "No logs directory found"
+        return 1
+    fi
+    
+    print_header "🔍 Search Results for: $pattern"
+    echo
+    
+    # Search recent logs
+    local recent_logs=$(ls -t logs/claude-*.txt 2>/dev/null | head -20)
+    
+    if [ -z "$recent_logs" ]; then
+        print_warning "No log files found"
+        return 0
+    fi
+    
+    echo "$recent_logs" | while read -r log; do
+        local matches=$(grep -n -i "$pattern" "$log" 2>/dev/null || true)
+        
+        if [ -n "$matches" ]; then
+            local basename_log=$(basename "$log")
+            echo -e "${CYAN}📄 $basename_log:${NC}"
+            echo "$matches" | head -5 | sed 's/^/  /'
+            echo
+        fi
+    done
+}
+
+# Function to show activity summary
+show_summary() {
+    if [ ! -d "logs" ]; then
+        print_error "No logs directory found"
+        return 1
+    fi
+    
+    print_header "📈 Activity Summary"
+    echo
+    
+    # Count sessions by day
+    local sessions_today=$(ls logs/claude-$(date +%Y%m%d)_*.txt 2>/dev/null | cut -d'-' -f2 | cut -d'_' -f1-2 | sort -u | wc -l || echo "0")
+    local sessions_yesterday=$(ls logs/claude-$(date -d yesterday +%Y%m%d 2>/dev/null || date -v-1d +%Y%m%d 2>/dev/null || echo "19700101")_*.txt 2>/dev/null | cut -d'-' -f2 | cut -d'_' -f1-2 | sort -u | wc -l || echo "0")
+    
+    echo "Development Sessions:"
+    echo "  Today: $sessions_today"
+    echo "  Yesterday: $sessions_yesterday"
+    echo
+    
+    # Count by agent type
+    echo "Agent Activity (last 7 days):"
+    find logs -name "claude-*.txt" -mtime -7 2>/dev/null | while read -r log; do
+        basename "$log" | sed 's/claude-[0-9_]*-\([^.]*\)\.txt/\1/'
+    done | sort | uniq -c | while read -r count agent; do
+        case "$agent" in
+            planner)   echo "  🧠 Planner: $count sessions" ;;
+            developer) echo "  👨‍💻 Developer: $count sessions" ;;
+            reviewer)  echo "  👁️  Reviewer: $count sessions" ;;
+            tester)    echo "  🧪 Tester: $count sessions" ;;
+        esac
+    done
+    
+    echo
+    
+    # Show recent errors
+    local recent_errors=$(find logs -name "claude-*.txt" -mtime -7 -exec grep -l -i "error\|fail\|exception" {} \; 2>/dev/null | wc -l || echo "0")
+    if [ "$recent_errors" -gt 0 ]; then
+        print_warning "Found errors in $recent_errors log files (last 7 days)"
+    else
+        print_success "No errors found in recent logs"
+    fi
+}
+
+# Function to watch logs in real-time
+watch_logs() {
+    if [ ! -d "logs" ]; then
+        print_error "No logs directory found"
+        return 1
+    fi
+    
+    print_info "Watching for new log entries... (Press Ctrl+C to stop)"
+    echo
+    
+    # Monitor the logs directory for changes
+    if command -v fswatch >/dev/null 2>&1; then
+        fswatch -o logs/ | while read num; do
+            echo -e "${YELLOW}🔄 Log activity detected${NC}"
+            sleep 1
+        done
+    elif command -v inotifywait >/dev/null 2>&1; then
+        inotifywait -m logs/ -e create,modify | while read path action file; do
+            echo -e "${YELLOW}🔄 $action: $file${NC}"
+        done
+    else
+        # Fallback: poll for changes
+        local last_count=$(ls logs/claude-*.txt 2>/dev/null | wc -l)
+        while true; do
+            sleep 2
+            local current_count=$(ls logs/claude-*.txt 2>/dev/null | wc -l)
+            if [ "$current_count" -gt "$last_count" ]; then
+                echo -e "${YELLOW}🔄 New log file detected${NC}"
+                last_count=$current_count
+            fi
+        done
+    fi
+}
+
+# Main function
+main() {
+    local command="${1:-list}"
+    local verbose=false
+    local follow=false
+    
+    # Parse global options
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --verbose|-v)
+                verbose=true
+                shift
+                ;;
+            --follow|-f)
+                follow=true
+                shift
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    
+    # Parse command
+    command="${1:-list}"
+    shift 2>/dev/null || true
+    
+    case "$command" in
+        list)
+            list_logs
+            ;;
+        tail)
+            tail_logs "$1" "$follow"
+            ;;
+        show)
+            show_log "$1"
+            ;;
+        errors)
+            show_errors "$1"
+            ;;
+        analyze)
+            analyze_session "$1"
+            ;;
+        clean)
+            clean_logs "$1"
+            ;;
+        summary)
+            show_summary
+            ;;
+        search)
+            search_logs "$1"
+            ;;
+        watch)
+            watch_logs
+            ;;
+        *)
+            print_error "Unknown command: $command"
+            echo
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+# Check if we're in a project directory
+if [ ! -d "logs" ] && [ ! -f "BRIEF.md" ]; then
+    print_warning "This doesn't appear to be a claude-fsd project directory"
+    print_info "Navigate to your project directory first"
+    exit 1
+fi
+
+# Run main function
+main "$@"

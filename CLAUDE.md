@@ -9,18 +9,36 @@ claude-fsd is an automated development system that runs continuous AI agent-driv
 ## Core Commands
 
 ```bash
-# Main entry points
+# Main entry points (wrapper commands)
 claude-fsd              # Interactive mode with guided setup
 claude-fsd dev          # Jump directly to development mode
-claudefsd-dev           # Direct development agent execution (continuous loop)
+claude-fsd plan         # Jump directly to planning mode
+claude-fsd plan-gen     # Generate new project plan
+claudefsd               # Alias for claude-fsd
 
-# Planning and setup
+# Direct agent execution (for advanced users)
+claudefsd-dev           # Direct development agent execution (continuous loop)
 claudefsd-analyze-brief # Generate questions from BRIEF.md (uses opus model)
 claudefsd-create-plan   # Create development plan from answered questions (uses opus model)
+claudefsd-check-dependencies # Verify required tools are available
+
+# Project monitoring and control
+claudefsd-status        # Show project status, progress, and health
+claudefsd-pause         # Gracefully pause development and save state
+claudefsd-resume        # Resume paused development with context restoration
+claudefsd-logs          # Advanced log analysis and monitoring
 
 # Testing and validation
 ./test-failure-detection.sh  # Test failure detection mechanisms
+./bootstrap.sh          # Bootstrap entire system from source including Codex
 ```
+
+## Build and Development Commands
+
+This is a Node.js CLI package with executable scripts:
+- **No build step required** - Shell scripts in `bin/` directory are the executables
+- **No testing framework** - Uses manual testing with `test-manual.md` instructions
+- **No linting setup** - Code quality maintained through AI review process
 
 ## Model Selection Strategy
 
@@ -80,9 +98,47 @@ Every 4th development cycle activates architectural planning mode for high-level
 - **Defensive programming**: All edge cases must throw proper exceptions
 
 ## Dependencies
-- **Required**: `claude` command (Claude CLI)
-- **Optional**: `codex` command for enhanced code review
+- **Required**: `claude` command (Claude CLI) - Install from https://docs.anthropic.com/en/docs/claude-code
+- **Optional**: `codex` command for enhanced code review - Set up from source via bootstrap script
 - **Optional**: OPENAI_API_KEY environment variable for Codex features
+- **Optional**: Node.js 22+ (only required if you want Codex CLI features - claude-fsd itself is pure bash)
+
+## Source Installation
+Claude-fsd is designed to run entirely from source without npm dependencies:
+```bash
+git clone <repository-url>
+cd claude-fsd
+./bootstrap.sh  # Automated installation with prompts
+```
+
+The bootstrap script will:
+- Install Claude CLI (with manual prompts)
+- Optionally set up OpenAI Codex CLI from source (includes Node.js v22+ if needed)
+- Set up PATH and zsh aliases
+- Verify all dependencies
+
+**Note**: claude-fsd core functionality is pure bash and requires no Node.js installation.
+
+### Manual Installation
+```bash
+# 1. Clone repository
+git clone <repository-url>
+cd claude-fsd
+
+# 2. Make scripts executable
+chmod +x bin/*
+
+# 3. Add to PATH (choose your shell config file)
+echo 'export PATH="'$(pwd)'/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+# 4. Install Claude CLI manually
+# Follow: https://docs.anthropic.com/en/docs/claude-code
+
+# 5. (Optional) Set up Codex CLI from source
+# This requires Node.js 22+ and is completely optional
+# See bootstrap.sh for detailed steps
+```
 
 ## Git Branch Strategy
 - Stays on current branch if it's a proper feature branch
@@ -94,3 +150,32 @@ Every 4th development cycle activates architectural planning mode for high-level
 - Tests should exercise real systems (databases, APIs) non-destructively  
 - No mocking without explicit permission
 - Lint and architecture tests run frequently during development
+
+## Enhanced Functionality
+
+### Project Monitoring Commands
+- **claudefsd-status**: Comprehensive project dashboard showing task progress, git status, recent activity, and system health
+- **claudefsd-pause**: Gracefully pause development sessions with state preservation
+- **claudefsd-resume**: Resume paused sessions with full context restoration and conflict detection
+- **claudefsd-logs**: Advanced log analysis with session grouping, error detection, and real-time monitoring
+
+### Development Workflow Enhancements
+- **State preservation**: Automatic saving of development context when pausing
+- **Progress tracking**: Visual progress bars and completion percentages for tasks
+- **Error monitoring**: Proactive detection of failures and performance issues  
+- **Session analysis**: Complete breakdown of agent activities and outputs
+- **Log management**: Intelligent log rotation, search, and analysis capabilities
+
+### Zsh Integration
+The bootstrap script creates convenient aliases:
+```bash
+# Quick commands
+cfsd='claude-fsd'
+cfsd-dev='claudefsd-dev'
+cfsd-status='claudefsd-status'
+
+# Development helpers
+cfsd-new PROJECT_NAME    # Create new project structure
+cfsd-logs tail developer # Tail latest developer logs
+cfsd-last-error         # Show recent errors
+```

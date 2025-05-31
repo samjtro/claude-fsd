@@ -1,0 +1,199 @@
+#!/bin/bash
+
+# Claude FSD Pause - Gracefully pause development and save state
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+print_success() { echo -e "${GREEN}✅ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_error() { echo -e "${RED}❌ $1${NC}"; }
+
+# Function to find running claude-fsd processes
+find_claude_processes() {
+    # Look for claudefsd-dev processes
+    pgrep -f "claudefsd-dev" 2>/dev/null || true
+}
+
+# Function to save current state
+save_state() {
+    local state_file=".claudefsd-state"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    print_info "Saving current state..."
+    
+    cat > "$state_file" << EOF
+# Claude FSD State - Saved on $timestamp
+# This file tracks the state when development was paused
+
+PAUSED_AT="$timestamp"
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+WORKING_DIRECTORY="$(pwd)"
+
+# Git status at pause time
+GIT_STATUS="$(git status --porcelain 2>/dev/null || echo 'no git')"
+
+# Last few log files
+RECENT_LOGS="$(ls -t logs/claude-*.txt 2>/dev/null | head -3 | tr '\n' ' ' || echo 'no logs')"
+
+# Current plan progress
+TOTAL_TASKS="$(grep -c "^\s*-\s*\[" docs/PLAN.md 2>/dev/null || echo '0')"
+COMPLETED_TASKS="$(grep -c "^\s*-\s*\[x\]" docs/PLAN.md 2>/dev/null || echo '0')"
+
+# Next task hint (for resuming)
+NEXT_TASK="$(grep -m1 "^\s*-\s*\[\s\]" docs/PLAN.md 2>/dev/null | sed 's/^\s*-\s*\[\s\]//' || echo 'no open tasks')"
+EOF
+    
+    print_success "State saved to $state_file"
+}
+
+# Function to gracefully terminate processes
+terminate_processes() {
+    local processes="$1"
+    
+    if [ -n "$processes" ]; then
+        print_info "Found running claude-fsd processes: $processes"
+        
+        # Try graceful termination first
+        echo "$processes" | while read -r pid; do
+            if [ -n "$pid" ]; then
+                print_info "Sending SIGTERM to process $pid"
+                kill -TERM "$pid" 2>/dev/null || true
+            fi
+        done
+        
+        # Wait a moment for graceful shutdown
+        sleep 3
+        
+        # Check if processes are still running
+        local still_running=$(find_claude_processes)
+        if [ -n "$still_running" ]; then
+            print_warning "Some processes still running, sending SIGKILL"
+            echo "$still_running" | while read -r pid; do
+                if [ -n "$pid" ]; then
+                    kill -KILL "$pid" 2>/dev/null || true
+                fi
+            done
+        fi
+        
+        print_success "All claude-fsd processes terminated"
+    else
+        print_info "No running claude-fsd processes found"
+    fi
+}
+
+# Function to show resume instructions
+show_resume_instructions() {
+    print_info "To resume development later:"
+    echo "  1. Navigate to: $(pwd)"
+    echo "  2. Run: claude-fsd dev"
+    echo "  3. Or use: claudefsd-dev"
+    echo
+    print_info "To check current status:"
+    echo "  claudefsd-status"
+    echo
+    print_info "To see what was being worked on:"
+    echo "  claudefsd-resume --dry-run"
+}
+
+# Function to create pause marker
+create_pause_marker() {
+    local marker_file="logs/paused-$(date +%Y%m%d_%H%M%S).marker"
+    mkdir -p logs
+    
+    cat > "$marker_file" << EOF
+Development paused at: $(date)
+Working directory: $(pwd)
+Git branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')
+Last activity: $(ls -t logs/claude-*.txt 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo 'none')
+
+Use 'claude-fsd dev' or 'claudefsd-dev' to resume.
+EOF
+    
+    print_success "Pause marker created: $marker_file"
+}
+
+# Main function
+main() {
+    echo -e "${BLUE}Claude FSD Pause${NC}"
+    echo -e "${BLUE}=================${NC}"
+    echo
+    
+    # Check if we're in a claude-fsd project
+    if [ ! -f "BRIEF.md" ] && [ ! -d "docs" ]; then
+        print_warning "This doesn't appear to be a claude-fsd project directory"
+        print_info "Navigate to your project directory first"
+        exit 1
+    fi
+    
+    # Find running processes
+    local running_processes=$(find_claude_processes)
+    
+    if [ -z "$running_processes" ]; then
+        print_info "No active claude-fsd development sessions found"
+        
+        # Still save state for potential manual pause
+        if [ "$1" = "--force" ] || [ "$1" = "-f" ]; then
+            save_state
+            create_pause_marker
+        else
+            print_info "Use --force to save state anyway"
+        fi
+    else
+        print_warning "Active development session detected"
+        echo
+        
+        # Ask for confirmation unless --yes flag is used
+        if [ "$1" != "--yes" ] && [ "$1" != "-y" ]; then
+            read -p "Do you want to pause the current development session? [y/N]: " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_info "Pause cancelled"
+                exit 0
+            fi
+        fi
+        
+        # Save state before terminating
+        save_state
+        
+        # Terminate processes
+        terminate_processes "$running_processes"
+        
+        # Create pause marker
+        create_pause_marker
+    fi
+    
+    echo
+    show_resume_instructions
+}
+
+# Handle command line arguments
+case "${1:-}" in
+    --help|-h)
+        echo "Usage: claudefsd-pause [OPTIONS]"
+        echo
+        echo "Gracefully pause claude-fsd development sessions"
+        echo
+        echo "Options:"
+        echo "  --yes, -y     Don't ask for confirmation"
+        echo "  --force, -f   Save state even if no active session"
+        echo "  --help, -h    Show this help message"
+        echo
+        echo "Examples:"
+        echo "  claudefsd-pause          # Interactive pause"
+        echo "  claudefsd-pause --yes    # Pause without confirmation"
+        echo "  claudefsd-pause --force  # Save state even if no session running"
+        exit 0
+        ;;
+esac
+
+# Run main function
+main "$@"

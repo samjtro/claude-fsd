@@ -1,0 +1,270 @@
+#!/bin/bash
+
+# Claude FSD Status - Project status overview and monitoring
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_header() { echo -e "${BLUE}$1${NC}"; }
+print_success() { echo -e "${GREEN}✅ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_error() { echo -e "${RED}❌ $1${NC}"; }
+print_info() { echo -e "${CYAN}ℹ️  $1${NC}"; }
+
+# Function to check if file exists and is not empty
+file_exists_and_not_empty() {
+    [ -f "$1" ] && [ -s "$1" ]
+}
+
+# Function to count tasks by status
+count_tasks() {
+    local file="$1"
+    local pattern="$2"
+    
+    if [ -f "$file" ]; then
+        grep -c "$pattern" "$file" 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+# Function to show recent activity
+show_recent_activity() {
+    print_header "📊 Recent Activity"
+    
+    if [ -d "logs" ] && [ "$(ls -A logs 2>/dev/null)" ]; then
+        local recent_logs=$(ls -t logs/claude-*.txt 2>/dev/null | head -5)
+        
+        if [ -n "$recent_logs" ]; then
+            echo "Last 5 development sessions:"
+            echo "$recent_logs" | while read -r log; do
+                local timestamp=$(basename "$log" | sed 's/claude-//' | sed 's/.txt$//' | sed 's/-developer$//' | sed 's/-planner$//' | sed 's/-tester$//' | sed 's/-reviewer$//')
+                local formatted_time=$(echo "$timestamp" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
+                local agent_type=$(basename "$log" | sed 's/claude-[0-9_]*-\([^.]*\)\.txt/\1/')
+                echo "  • $formatted_time ($agent_type)"
+            done
+        else
+            echo "No recent development sessions found"
+        fi
+    else
+        echo "No logs directory found"
+    fi
+    echo
+}
+
+# Function to show git status
+show_git_status() {
+    if [ -d ".git" ]; then
+        print_header "🔧 Git Status"
+        
+        local branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        echo "Current branch: $branch"
+        
+        local status=$(git status --porcelain 2>/dev/null)
+        if [ -n "$status" ]; then
+            echo "Working directory changes:"
+            echo "$status" | head -10
+            local total_changes=$(echo "$status" | wc -l)
+            if [ "$total_changes" -gt 10 ]; then
+                echo "... and $((total_changes - 10)) more changes"
+            fi
+        else
+            echo "Working directory clean"
+        fi
+        
+        local commits_ahead=$(git rev-list --count HEAD ^origin/$branch 2>/dev/null || echo "0")
+        if [ "$commits_ahead" -gt 0 ]; then
+            echo "Commits ahead of origin: $commits_ahead"
+        fi
+        
+        echo
+    fi
+}
+
+# Function to analyze plan progress
+analyze_plan_progress() {
+    print_header "📋 Development Plan Progress"
+    
+    if file_exists_and_not_empty "docs/PLAN.md"; then
+        local total_tasks=$(count_tasks "docs/PLAN.md" "^\s*-\s*\[")
+        local completed_tasks=$(count_tasks "docs/PLAN.md" "^\s*-\s*\[x\]")
+        local in_progress_tasks=$(count_tasks "docs/PLAN.md" "^\s*-\s*\[~\]")
+        local open_tasks=$((total_tasks - completed_tasks - in_progress_tasks))
+        
+        if [ "$total_tasks" -gt 0 ]; then
+            local completion_percentage=$((completed_tasks * 100 / total_tasks))
+            
+            echo "Tasks Overview:"
+            echo "  Total: $total_tasks"
+            echo "  ✅ Completed: $completed_tasks ($completion_percentage%)"
+            [ "$in_progress_tasks" -gt 0 ] && echo "  🔄 In Progress: $in_progress_tasks"
+            [ "$open_tasks" -gt 0 ] && echo "  📝 Open: $open_tasks"
+            
+            # Progress bar
+            local filled=$((completion_percentage / 5))  # 20 chars max
+            local empty=$((20 - filled))
+            printf "  Progress: ["
+            printf "%*s" $filled | tr ' ' '█'
+            printf "%*s" $empty | tr ' ' '░'
+            printf "] %d%%\n" $completion_percentage
+            
+            # Show next tasks
+            if [ "$open_tasks" -gt 0 ]; then
+                echo ""
+                echo "Next open tasks:"
+                grep "^\s*-\s*\[\s\]" "docs/PLAN.md" | head -3 | sed 's/^\s*-\s*\[\s\]/  •/'
+            fi
+            
+            # Show current in-progress tasks
+            if [ "$in_progress_tasks" -gt 0 ]; then
+                echo ""
+                echo "Currently in progress:"
+                grep "^\s*-\s*\[~\]" "docs/PLAN.md" | head -3 | sed 's/^\s*-\s*\[~\]/  •/'
+            fi
+        else
+            print_warning "No tasks found in PLAN.md"
+        fi
+    else
+        print_error "docs/PLAN.md not found or empty"
+    fi
+    echo
+}
+
+# Function to show project files status
+show_project_status() {
+    print_header "📁 Project Files Status"
+    
+    # Core files
+    if file_exists_and_not_empty "BRIEF.md"; then
+        print_success "BRIEF.md exists and contains content"
+    else
+        print_error "BRIEF.md missing or empty"
+    fi
+    
+    if file_exists_and_not_empty "docs/QUESTIONS.md"; then
+        print_success "docs/QUESTIONS.md exists and contains content"
+    else
+        print_warning "docs/QUESTIONS.md missing or empty"
+    fi
+    
+    if file_exists_and_not_empty "docs/PLAN.md"; then
+        print_success "docs/PLAN.md exists and contains content"
+    else
+        print_error "docs/PLAN.md missing or empty"
+    fi
+    
+    # Optional files
+    [ -f "docs/CLAUDE-NOTES.md" ] && print_info "docs/CLAUDE-NOTES.md exists"
+    [ -f "docs/IDEAS.md" ] && print_info "docs/IDEAS.md exists"
+    
+    echo
+}
+
+# Function to show system health
+show_system_health() {
+    print_header "🏥 System Health"
+    
+    # Check dependencies
+    if command -v claude >/dev/null 2>&1; then
+        print_success "Claude CLI available"
+    else
+        print_error "Claude CLI not found"
+    fi
+    
+    if command -v codex >/dev/null 2>&1; then
+        print_success "Codex CLI available"
+    else
+        print_warning "Codex CLI not found (optional)"
+    fi
+    
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
+        print_success "OPENAI_API_KEY environment variable set"
+    else
+        print_warning "OPENAI_API_KEY not set (needed for Codex)"
+    fi
+    
+    # Check for potential issues
+    if [ -d "logs" ]; then
+        local recent_errors=$(find logs -name "*.txt" -mtime -1 -exec grep -l "error\|Error\|ERROR\|fail\|Fail\|FAIL" {} \; 2>/dev/null | wc -l)
+        if [ "$recent_errors" -gt 0 ]; then
+            print_warning "Found $recent_errors log files with errors in the last 24 hours"
+        fi
+    fi
+    
+    echo
+}
+
+# Function to show performance metrics
+show_performance_metrics() {
+    print_header "⚡ Performance Metrics"
+    
+    if [ -d "logs" ] && [ "$(ls -A logs 2>/dev/null)" ]; then
+        # Analyze recent iteration times from log timestamps
+        local recent_logs=$(ls -t logs/claude-*-developer.txt 2>/dev/null | head -10)
+        
+        if [ -n "$recent_logs" ]; then
+            echo "Recent iteration analysis:"
+            
+            local total_time=0
+            local iteration_count=0
+            local fast_iterations=0
+            
+            echo "$recent_logs" | while read -r log; do
+                if [ -f "$log" ]; then
+                    local size=$(stat -f%z "$log" 2>/dev/null || stat -c%s "$log" 2>/dev/null || echo "0")
+                    local timestamp=$(basename "$log" | sed 's/claude-//' | sed 's/-developer.txt$//')
+                    
+                    if [ "$size" -lt 1000 ]; then
+                        echo "  • $timestamp: Small output (potential fast iteration)"
+                    else
+                        echo "  • $timestamp: Normal output"
+                    fi
+                fi
+            done
+        else
+            echo "No developer logs found for analysis"
+        fi
+    else
+        echo "No logs available for performance analysis"
+    fi
+    echo
+}
+
+# Main function
+main() {
+    echo -e "${BLUE}Claude FSD Status Dashboard${NC}"
+    echo -e "${BLUE}==========================${NC}"
+    echo
+    
+    # Check if we're in a claude-fsd project
+    if [ ! -f "BRIEF.md" ] && [ ! -d "docs" ]; then
+        print_warning "This doesn't appear to be a claude-fsd project directory"
+        print_info "Run 'claude-fsd' to initialize a new project"
+        echo
+        exit 1
+    fi
+    
+    show_project_status
+    analyze_plan_progress
+    show_git_status
+    show_recent_activity
+    show_system_health
+    
+    # Only show performance metrics if requested
+    if [ "$1" = "--detailed" ] || [ "$1" = "-d" ]; then
+        show_performance_metrics
+    fi
+    
+    print_info "Use 'claudefsd-status --detailed' for performance metrics"
+}
+
+# Run main function
+main "$@"
