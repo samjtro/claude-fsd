@@ -5,6 +5,28 @@ set -e
 # Check dependencies
 $(dirname "$0")/claudefsd-check-dependencies
 
+# Cleanup auto-commit monitor on exit
+cleanup_auto_commit() {
+    if [ -n "$AUTO_COMMIT_PID" ]; then
+        echo -e "\033[36mStopping auto-commit monitor...\033[0m"
+        kill "$AUTO_COMMIT_PID" 2>/dev/null || true
+    fi
+}
+
+trap cleanup_auto_commit EXIT INT TERM
+
+# Start auto-commit monitoring if enabled
+AUTO_COMMIT_SCRIPT="$(dirname "$0")/claudefsd-auto-commit"
+if [ -f "$AUTO_COMMIT_SCRIPT" ]; then
+    # Check if auto-commit is enabled and not already monitoring
+    if "$AUTO_COMMIT_SCRIPT" --status | grep -q "Auto-commit is ENABLED" && ! pgrep -f "claudefsd-auto-commit.*--monitor" >/dev/null 2>&1; then
+        echo -e "\033[36mStarting auto-commit monitoring...\033[0m"
+        "$AUTO_COMMIT_SCRIPT" --monitor &
+        AUTO_COMMIT_PID=$!
+        echo -e "\033[36mAuto-commit monitor started (PID: $AUTO_COMMIT_PID)\033[0m"
+    fi
+fi
+
 # Add counter for loop iterations
 LOOP_COUNTER=0
 

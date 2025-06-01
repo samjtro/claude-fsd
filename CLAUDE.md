@@ -31,6 +31,11 @@ claudefsd-logs          # Advanced log analysis and monitoring
 # Testing and validation
 ./test-failure-detection.sh  # Test failure detection mechanisms
 ./bootstrap.sh          # Bootstrap entire system from source including Codex
+
+# Automatic commit management
+claudefsd-auto-commit --enable [timeout]  # Enable auto-commits with timeout
+claudefsd-auto-commit --monitor           # Start background monitoring
+claudefsd-auto-commit --status            # Check auto-commit status
 ```
 
 ## Build and Development Commands
@@ -165,6 +170,14 @@ source ~/.zshrc
 - **Error monitoring**: Proactive detection of failures and performance issues  
 - **Session analysis**: Complete breakdown of agent activities and outputs
 - **Log management**: Intelligent log rotation, search, and analysis capabilities
+
+### Automatic Commit Management
+- **claudefsd-auto-commit**: Provides automatic patch/commit notes after configurable timeout periods
+- **Background monitoring**: Integrates seamlessly with development cycles to track activity
+- **Context-aware commits**: Includes progress summaries, next tasks, and development state
+- **Configurable timeouts**: Default 30-minute timeout, customizable per project
+- **Activity detection**: Monitors log files and git changes to detect ongoing work
+- **Clean integration**: Automatically starts/stops with development sessions
 
 ### Zsh Integration
 The bootstrap script creates convenient aliases:

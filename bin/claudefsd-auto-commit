@@ -1,0 +1,362 @@
+#!/bin/bash
+
+# Claude FSD Auto-Commit - Automatic patch/commit notes after timeout periods
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Configuration
+DEFAULT_TIMEOUT=30    # 30 seconds in seconds
+WARNING_TIME=10       # Warning time in seconds
+AUTO_COMMIT_CONFIG=".claudefsd-autocommit"
+
+# Function to print colored output
+print_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+print_success() { echo -e "${GREEN}✅ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+print_error() { echo -e "${RED}❌ $1${NC}"; }
+print_commit() { echo -e "${CYAN}📝 $1${NC}"; }
+
+# Function to load configuration
+load_config() {
+    local timeout=$DEFAULT_TIMEOUT
+    local enabled=false
+    
+    if [ -f "$AUTO_COMMIT_CONFIG" ]; then
+        source "$AUTO_COMMIT_CONFIG"
+    fi
+    
+    echo "timeout=$timeout"
+    echo "enabled=$enabled"
+}
+
+# Function to save configuration
+save_config() {
+    local timeout=${1:-$DEFAULT_TIMEOUT}
+    local enabled=${2:-false}
+    
+    cat > "$AUTO_COMMIT_CONFIG" << EOF
+# Claude FSD Auto-Commit Configuration
+# Generated on $(date)
+
+# Enable automatic commit notes (true/false)
+enabled=$enabled
+
+# Timeout in seconds before auto-commit triggers
+timeout=$timeout
+
+# Last auto-commit timestamp (managed automatically)
+last_commit_time=$(date +%s)
+EOF
+    
+    print_success "Configuration saved: enabled=$enabled, timeout=${timeout}s"
+}
+
+# Function to check if git working directory has changes
+has_git_changes() {
+    if [ ! -d ".git" ]; then
+        return 1
+    fi
+    
+    local status=$(git status --porcelain 2>/dev/null)
+    [ -n "$status" ]
+}
+
+# Function to get project progress summary
+get_progress_summary() {
+    local summary=""
+    
+    # Get task progress from PLAN.md
+    if [ -f "docs/PLAN.md" ]; then
+        local total_tasks=$(grep -c "^\s*-\s*\[" "docs/PLAN.md" 2>/dev/null || echo "0")
+        local completed_tasks=$(grep -c "^\s*-\s*\[x\]" "docs/PLAN.md" 2>/dev/null || echo "0")
+        local in_progress_tasks=$(grep -c "^\s*-\s*\[~\]" "docs/PLAN.md" 2>/dev/null || echo "0")
+        
+        summary="Progress: $completed_tasks/$total_tasks tasks completed"
+        if [ "$in_progress_tasks" -gt 0 ]; then
+            summary="$summary, $in_progress_tasks in progress"
+        fi
+    fi
+    
+    # Get recent activity from logs
+    if [ -d "logs" ]; then
+        local recent_log=$(ls -t logs/claude-*.txt 2>/dev/null | head -1)
+        if [ -n "$recent_log" ]; then
+            local log_time=$(basename "$recent_log" | sed 's/claude-//' | sed 's/-[a-z]*\.txt$//')
+            local formatted_time=$(echo "$log_time" | sed 's/\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)_\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)/\1-\2-\3 \4:\5:\6/')
+            summary="$summary\nLast activity: $formatted_time"
+        fi
+    fi
+    
+    echo -e "$summary"
+}
+
+# Function to get next tasks preview
+get_next_tasks() {
+    if [ -f "docs/PLAN.md" ]; then
+        local next_tasks=$(grep "^\s*-\s*\[\s\]" "docs/PLAN.md" | head -3 | sed 's/^\s*-\s*\[\s\]/• /')
+        if [ -n "$next_tasks" ]; then
+            echo -e "Next tasks:\n$next_tasks"
+        else
+            echo "All tasks completed"
+        fi
+    else
+        echo "No plan available"
+    fi
+}
+
+# Function to create automatic commit note
+create_auto_commit() {
+    local timeout_display
+    if [ "$timeout" -ge 60 ]; then
+        timeout_display="$((timeout / 60))m"
+    else
+        timeout_display="${timeout}s"
+    fi
+    
+    print_commit "Creating automatic commit note after ${timeout_display} timeout..."
+    
+    # Get commit message components
+    local progress=$(get_progress_summary)
+    local next_tasks=$(get_next_tasks)
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # Create commit message
+    local commit_msg="Auto-commit: Development session pause
+
+Automatic commit created after ${timeout_display} timeout.
+
+$progress
+
+$next_tasks
+
+Timestamp: $timestamp
+
+🤖 Generated with Claude FSD Auto-Commit
+Co-Authored-By: Claude <noreply@anthropic.com>"
+
+    # Stage all changes and commit
+    git add -A
+    
+    # Use heredoc for proper formatting
+    git commit -m "$(cat <<EOF
+$commit_msg
+EOF
+)"
+    
+    print_success "Auto-commit created with current progress"
+    
+    # Update last commit time
+    local current_config=$(load_config)
+    local current_timeout=$(echo "$current_config" | grep "timeout=" | cut -d'=' -f2)
+    save_config "$current_timeout" "true"
+}
+
+# Function to start monitoring (background daemon)
+start_monitoring() {
+    local config=$(load_config)
+    local timeout=$(echo "$config" | grep "timeout=" | cut -d'=' -f2)
+    local enabled=$(echo "$config" | grep "enabled=" | cut -d'=' -f2)
+    
+    if [ "$enabled" != "true" ]; then
+        print_error "Auto-commit is disabled. Enable with: claudefsd-auto-commit --enable"
+        exit 1
+    fi
+    
+    print_info "Starting auto-commit monitoring (timeout: ${timeout}s)"
+    
+    # Create monitoring lock file
+    local lock_file="/tmp/claudefsd-autocommit-$$.lock"
+    echo $$ > "$lock_file"
+    
+    # Cleanup function
+    cleanup() {
+        rm -f "$lock_file"
+        print_info "Auto-commit monitoring stopped"
+        exit 0
+    }
+    
+    trap cleanup INT TERM EXIT
+    
+    local last_activity_time=$(date +%s)
+    local warning_shown=false
+    
+    while true; do
+        # Check if main development process is still running
+        if ! pgrep -f "claudefsd-dev" >/dev/null 2>&1; then
+            print_info "Development process stopped, monitoring paused"
+            sleep 30
+            continue
+        fi
+        
+        # Check for new activity (log files, git changes)
+        local current_time=$(date +%s)
+        local latest_log=$(ls -t logs/claude-*.txt 2>/dev/null | head -1)
+        
+        if [ -n "$latest_log" ]; then
+            local log_mod_time=$(stat -f %m "$latest_log" 2>/dev/null || echo "0")
+            if [ "$log_mod_time" -gt "$last_activity_time" ]; then
+                last_activity_time=$log_mod_time
+                warning_shown=false
+                print_info "Activity detected, resetting timeout"
+            fi
+        fi
+        
+        # Check if timeout exceeded
+        local elapsed=$((current_time - last_activity_time))
+        local warning_threshold=$((timeout - WARNING_TIME))
+        
+        if [ "$elapsed" -ge "$warning_threshold" ] && [ "$elapsed" -lt "$timeout" ] && has_git_changes && [ "$warning_shown" = "false" ]; then
+            local remaining=$((timeout - elapsed))
+            print_warning "Auto-commit will trigger in ${remaining}s - Press Ctrl+C to cancel or add manual commit"
+            warning_shown=true
+        elif [ "$elapsed" -ge "$timeout" ] && has_git_changes; then
+            print_warning "Timeout reached! Creating auto-commit..."
+            create_auto_commit
+            last_activity_time=$current_time
+            warning_shown=false
+        fi
+        
+        # Sleep for 1 second for more responsive warnings
+        sleep 1
+    done
+}
+
+# Function to show status
+show_status() {
+    local config=$(load_config)
+    local timeout=$(echo "$config" | grep "timeout=" | cut -d'=' -f2)
+    local enabled=$(echo "$config" | grep "enabled=" | cut -d'=' -f2)
+    local timeout_display
+    if [ "$timeout" -ge 60 ]; then
+        timeout_display="$((timeout / 60)) minutes"
+    else
+        timeout_display="${timeout} seconds"
+    fi
+    
+    echo -e "${BLUE}Claude FSD Auto-Commit Status${NC}"
+    echo -e "${BLUE}=============================${NC}"
+    echo
+    
+    if [ "$enabled" = "true" ]; then
+        print_success "Auto-commit is ENABLED"
+    else
+        print_warning "Auto-commit is DISABLED"
+    fi
+    
+    echo "  Timeout: ${timeout_display}"
+    
+    # Check if monitoring is active
+    local monitor_pid=$(pgrep -f "claudefsd-auto-commit.*--monitor" 2>/dev/null || true)
+    if [ -n "$monitor_pid" ]; then
+        print_info "Monitor running (PID: $monitor_pid)"
+    else
+        print_warning "Monitor not running"
+    fi
+    
+    # Check git status
+    if has_git_changes; then
+        print_info "Working directory has uncommitted changes"
+    else
+        print_success "Working directory is clean"
+    fi
+    
+    echo
+    echo "Configuration file: $AUTO_COMMIT_CONFIG"
+}
+
+# Main function
+main() {
+    case "${1:-}" in
+        --enable|-e)
+            local timeout=${2:-$DEFAULT_TIMEOUT}
+            save_config "$timeout" "true"
+            print_info "Use 'claudefsd-auto-commit --monitor' to start monitoring"
+            ;;
+        --disable|-d)
+            local config=$(load_config)
+            local current_timeout=$(echo "$config" | grep "timeout=" | cut -d'=' -f2)
+            save_config "$current_timeout" "false"
+            
+            # Stop any running monitors
+            local monitor_pid=$(pgrep -f "claudefsd-auto-commit.*--monitor" 2>/dev/null || true)
+            if [ -n "$monitor_pid" ]; then
+                kill "$monitor_pid" 2>/dev/null || true
+                print_info "Stopped running monitor"
+            fi
+            ;;
+        --monitor|-m)
+            start_monitoring
+            ;;
+        --status|-s)
+            show_status
+            ;;
+        --timeout|-t)
+            if [ -z "$2" ]; then
+                print_error "Timeout value required"
+                exit 1
+            fi
+            local config=$(load_config)
+            local current_enabled=$(echo "$config" | grep "enabled=" | cut -d'=' -f2)
+            save_config "$2" "$current_enabled"
+            ;;
+        --commit-now|-c)
+            if has_git_changes; then
+                local config=$(load_config)
+                local timeout=$(echo "$config" | grep "timeout=" | cut -d'=' -f2)
+                create_auto_commit
+            else
+                print_info "No changes to commit"
+            fi
+            ;;
+        --help|-h)
+            echo "Usage: claudefsd-auto-commit [OPTIONS]"
+            echo
+            echo "Automatic patch/commit notes for claude-fsd development sessions"
+            echo
+            echo "Options:"
+            echo "  --enable [TIMEOUT], -e    Enable auto-commit (default: 30s)"
+            echo "  --disable, -d             Disable auto-commit"
+            echo "  --monitor, -m             Start monitoring daemon"
+            echo "  --status, -s              Show current status"
+            echo "  --timeout SECONDS, -t     Set timeout period"
+            echo "  --commit-now, -c          Create immediate auto-commit"
+            echo "  --help, -h                Show this help message"
+            echo
+            echo "Examples:"
+            echo "  claudefsd-auto-commit --enable 30       # Enable with 30s timeout"
+            echo "  claudefsd-auto-commit --monitor          # Start background monitoring"
+            echo "  claudefsd-auto-commit --status           # Check current status"
+            echo "  claudefsd-auto-commit --commit-now       # Force immediate commit"
+            echo
+            echo "Integration with claudefsd-dev:"
+            echo "  The monitoring daemon automatically integrates with development cycles"
+            echo "  and creates commits when no activity is detected for the timeout period."
+            exit 0
+            ;;
+        "")
+            show_status
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+}
+
+# Check if we're in a claude-fsd project
+if [ ! -f "BRIEF.md" ] && [ ! -d "docs" ] && [ "$1" != "--help" ] && [ "$1" != "-h" ]; then
+    print_warning "This doesn't appear to be a claude-fsd project directory"
+    exit 1
+fi
+
+# Run main function
+main "$@"
