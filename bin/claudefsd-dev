@@ -2,18 +2,60 @@
 
 set -e
 
+# Parse command line arguments
+VERBOSE=false
+if [ "$1" = "--verbose" ] || [ "$1" = "-v" ]; then
+    VERBOSE=true
+    shift
+elif [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    echo "Usage: claudefsd-dev [--verbose]"
+    echo
+    echo "Run the Claude FSD development loop with AI agents"
+    echo
+    echo "Options:"
+    echo "  --verbose, -v   Show all Claude Code logs instead of status bar"
+    echo "  --help, -h      Show this help message"
+    echo
+    echo "Default behavior shows a status bar with timer and current activity."
+    echo "Use --verbose to see full Claude Code output for debugging."
+    exit 0
+fi
+
+# Function to show status bar with timer and activity
+show_status() {
+    local activity="$1"
+    local start_time="$2"
+    local current_time=$(date +%s)
+    local elapsed=$((current_time - start_time))
+    local minutes=$((elapsed / 60))
+    local seconds=$((elapsed % 60))
+    printf "\r\033[36m[%02d:%02d] %s\033[0m\033[K" "$minutes" "$seconds" "$activity"
+}
+
+# Function to clear status line
+clear_status() {
+    printf "\r\033[K"
+}
+
 # Check dependencies
 $(dirname "$0")/claudefsd-check-dependencies
 
-# Cleanup auto-commit monitor on exit
-cleanup_auto_commit() {
+# Cleanup auto-commit monitor and status bar on exit
+cleanup_resources() {
+    # Clear status line if it exists
+    if [ -n "$STATUS_PID" ]; then
+        kill "$STATUS_PID" 2>/dev/null || true
+        clear_status
+    fi
+    
+    # Stop auto-commit monitor
     if [ -n "$AUTO_COMMIT_PID" ]; then
         echo -e "\033[36mStopping auto-commit monitor...\033[0m"
         kill "$AUTO_COMMIT_PID" 2>/dev/null || true
     fi
 }
 
-trap cleanup_auto_commit EXIT INT TERM
+trap cleanup_resources EXIT INT TERM
 
 # Start auto-commit monitoring if enabled
 AUTO_COMMIT_SCRIPT="$(dirname "$0")/claudefsd-auto-commit"
@@ -47,24 +89,34 @@ while true; do
     export TMPDIR=tmp/
     LOGFILE="logs/claude-$(date +%Y%m%d_%H%M%S).txt"
 
-    echo "Logging to ${LOGFILE}-* ..."
+    if [ "$VERBOSE" = true ]; then
+        echo "Logging to ${LOGFILE}-* ..."
 
-    echo -e "\033[32m==================================================================\033[0m"
-    echo -e "\033[32m== PLANNING NEXT TASK\033[0m"
-    echo -e "\033[32m==================================================================\033[0m"
+        echo -e "\033[32m==================================================================\033[0m"
+        echo -e "\033[32m== PLANNING NEXT TASK\033[0m"
+        echo -e "\033[32m==================================================================\033[0m"
+    fi
 
     # Check if this is the 4th iteration for megathinking mode
     if [ $((LOOP_COUNTER % 4)) -eq 0 ]; then
-        echo -e "\033[33m**** MEGATHINKING MODE ACTIVATED ****\033[0m"
-        echo -e "\033[33mThis is your 4th development cycle. Taking a step back for architectural planning.\033[0m"
+        if [ "$VERBOSE" = true ]; then
+            echo -e "\033[33m**** MEGATHINKING MODE ACTIVATED ****\033[0m"
+            echo -e "\033[33mThis is your 4th development cycle. Taking a step back for architectural planning.\033[0m"
+        fi
         MEGATHINKING_MODE="**** MEGATHINKING MODE ACTIVATED ****\nThis is your 4th development cycle. Before proceeding with the next task, please take a step back and use megathinking mode to architecturally plan the next phase of development. Consider the overall structure of the codebase, potential refactoring opportunities, design patterns, technical debt, and how the current work connects to broader project goals.\n\n"
         CLAUDE_MODEL="opus"
+        ACTIVITY_PREFIX="Megathinking: "
     else
         MEGATHINKING_MODE=""
         CLAUDE_MODEL="sonnet"
+        ACTIVITY_PREFIX=""
     fi
 
-    time claude --model $CLAUDE_MODEL -p "
+    # Start status monitoring for planning phase
+    PLANNING_START_TIME=$(date +%s)
+    
+    if [ "$VERBOSE" = true ]; then
+        time claude --model $CLAUDE_MODEL -p "
 $MEGATHINKING_MODE
 You are an AI assistant specialized in project management and software development workflows. Your task is to analyze project documentation and identify the next open task for a developer to work on.
 
@@ -107,21 +159,85 @@ Example output structure:
 Please proceed with your analysis and task identification based on the project documentation. Your final output should consist only of the task description in <task_description> tags or <ALL DONE>, and should not duplicate or rehash any of the work you did in the analysis section.
 
 " | tee >(cat > $LOGFILE-planner)
+    else
+        # Non-verbose mode - show status bar and suppress output
+        {
+            while true; do
+                show_status "${ACTIVITY_PREFIX}Planning next task..." "$PLANNING_START_TIME"
+                sleep 1
+            done
+        } &
+        STATUS_PID=$!
+        
+        claude --model $CLAUDE_MODEL -p "
+$MEGATHINKING_MODE
+You are an AI assistant specialized in project management and software development workflows. Your task is to analyze project documentation and identify the next open task for a developer to work on.
+
+Please follow these steps to complete your task:
+
+1. Read the contents of docs/PLAN.md in order.
+2. Identify all open tasks that need to be done by the developer.
+3. Gather related context from docs/PLAN.md, BRIEF.md, docs/QUESTIONS.md, and docs/CLAUDE-NOTES.md.
+4. Consider the bigger picture of the project and potential impacts of each task.
+5. Evaluate the risk and efficiency of potential changes for each task.
+6. Prioritize the tasks based primarily on their order in the plan, but also factor in importance, risk, and efficiency.
+7. Select the most appropriate next task and formulate a response that includes the task description and relevant context.
+
+In your analysis, please consider the following:
+- Include any sub-bullet points or section information related to the tasks.
+- Think about how each task fits into the overall project goals.
+- Be aware of potential bottlenecks or situations where a single fix might resolve multiple issues.
+- Consider dependencies between tasks and how they might affect prioritization.
+
+Before providing your final task description, wrap your analysis inside <analysis> tags in your thinking block. This should include:
+- A list of all open tasks identified from docs/PLAN.md
+- An evaluation of each task's priority, risk, and efficiency
+- Consideration of task dependencies
+- Your reasoning for the final task selection, including how it fits into the project's broader context
+
+Your final output should be a clear, concise description of the next task, including relevant context and considerations. Use <task_description> tags for this output.
+
+If the plan is complete and there are no more tasks to be done, simply respond with <ALL DONE>.
+
+Example output structure:
+
+<analysis>
+[Your detailed analysis of the project documentation, list of open tasks, evaluation of each task, consideration of risks and impacts, and reasoning for task selection]
+</analysis>
+
+<task_description>
+[A concise description of the next task, including relevant context and considerations]
+</task_description>
+
+Please proceed with your analysis and task identification based on the project documentation. Your final output should consist only of the task description in <task_description> tags or <ALL DONE>, and should not duplicate or rehash any of the work you did in the analysis section.
+
+" > $LOGFILE-planner 2>&1
+        
+        # Stop status bar
+        kill $STATUS_PID 2>/dev/null || true
+        clear_status
+    fi
 
     nexttask=$(cat $LOGFILE-planner)
 
-    echo -e "\033[32m==================================================================\033[0m"
-    echo -e "\033[32m== RUNNING DEVELOPER TASK\033[0m"
-    echo -e "\033[32m==================================================================\033[0m"
+    if [ "$VERBOSE" = true ]; then
+        echo -e "\033[32m==================================================================\033[0m"
+        echo -e "\033[32m== RUNNING DEVELOPER TASK\033[0m"
+        echo -e "\033[32m==================================================================\033[0m"
 
-    # Show megathinking banner for developer if active
-    if [ $((LOOP_COUNTER % 4)) -eq 0 ]; then
-        echo -e "\033[33m**** MEGATHINKING MODE ACTIVATED ****\033[0m"
-        echo -e "\033[33mThis is your 4th development cycle. Taking a step back for architectural planning.\033[0m"
+        # Show megathinking banner for developer if active
+        if [ $((LOOP_COUNTER % 4)) -eq 0 ]; then
+            echo -e "\033[33m**** MEGATHINKING MODE ACTIVATED ****\033[0m"
+            echo -e "\033[33mThis is your 4th development cycle. Taking a step back for architectural planning.\033[0m"
+        fi
     fi
 
-    # run the task
-    time claude --model $CLAUDE_MODEL --dangerously-skip-permissions -p "
+    # Start status monitoring for development phase
+    DEVELOPMENT_START_TIME=$(date +%s)
+    
+    if [ "$VERBOSE" = true ]; then
+        # run the task
+        time claude --model $CLAUDE_MODEL --dangerously-skip-permissions -p "
 $MEGATHINKING_MODE
 You are an AI developer working within an automated development environment. Your role is to complete tasks, plan implementations, and maintain high-quality code. Here is the specific task you need to complete:
 
@@ -195,10 +311,101 @@ Remember to adhere to the project's standards and best practices. Your work will
 
 Your final output should consist only of the execution details, linter output, changes description, questions update, and ideas update. Do not duplicate or rehash any of the work you did in the implementation planning section.
 " | tee >(cat > $LOGFILE-developer)
+    else
+        # Non-verbose mode - show status bar and suppress output
+        {
+            while true; do
+                show_status "${ACTIVITY_PREFIX}Implementing task..." "$DEVELOPMENT_START_TIME"
+                sleep 1
+            done
+        } &
+        STATUS_PID=$!
+        
+        claude --model $CLAUDE_MODEL --dangerously-skip-permissions -p "
+$MEGATHINKING_MODE
+You are an AI developer working within an automated development environment. Your role is to complete tasks, plan implementations, and maintain high-quality code. Here is the specific task you need to complete:
 
-    echo -e "\033[32m==================================================================\033[0m"
-    echo -e "\033[32m== REVIEWING WORK (backgrounded)\033[0m"
-    echo -e "\033[32m==================================================================\033[0m"
+<next_task>
+$nexttask
+</next_task>
+
+Please follow these steps to complete the task:
+
+1. Analyze the task and plan your approach. In your thinking block, create an implementation plan wrapped in <implementation_plan> tags. Include:
+   - A detailed breakdown of the task into clear, actionable steps
+   - For each step, identify:
+     * Potential challenges and proposed solutions
+     * Architectural implications
+     * How to adhere to clean code principles
+     * Impact on the overall system
+     * Defensive programming techniques to employ
+     * Potential edge cases and how to handle them
+     * A minimal, focused testing strategy (avoid extensive test infrastructure)
+
+2. Execute the necessary changes or Bash commands to complete the task. Use parallel agents for dev work when appropriate to increase efficiency.
+
+3. If a linter is defined for this project, run it and include the output in <linter_output> tags.
+
+4. Describe the changes you've made in <changes> tags. Include:
+   - A summary of implemented changes
+   - Explanation of architectural decisions
+   - Potential areas of concern or future considerations
+   - Confirmation of defensive programming techniques
+   - Verification that all failure modes throw exceptions
+   - How edge cases were addressed
+   - Outline of the testing strategy
+
+5. Add any questions for future reference to the QUESTIONS.md file. Summarize these additions in <questions_update> tags.
+
+6. Add any ideas for future improvements or features to the IDEAS.md file. Summarize these additions in <ideas_update> tags.
+
+Important guidelines:
+
+- Simplicity: Delete old code, avoid hoarding. Use git for version control.
+- Brutal honesty: Disagree when needed. If something fails, let it fail visibly.
+- No cheating: Fix failing tests, don't skip them. No mocks without permission.
+- No production fallbacks: Never catch exceptions to return fallback values or silently handle integration failures.
+- Write real integration tests and run linters/tests frequently during development.
+- Stay on the current git branch if it's a feature branch.
+- Set up pre-commit hooks for basic SDLC protections.
+
+Your final output should follow this structure:
+
+<execution>
+[Details of executed changes or commands]
+</execution>
+
+<linter_output>
+[Linter output, if applicable]
+</linter_output>
+
+<changes>
+[Description of changes as outlined above]
+</changes>
+
+<questions_update>
+[Summary of questions added to QUESTIONS.md]
+</questions_update>
+
+<ideas_update>
+[Summary of ideas added to IDEAS.md]
+</ideas_update>
+
+Remember to adhere to the project's standards and best practices. Your work will be reviewed before being committed to the repository.
+
+Your final output should consist only of the execution details, linter output, changes description, questions update, and ideas update. Do not duplicate or rehash any of the work you did in the implementation planning section.
+" > $LOGFILE-developer 2>&1
+        
+        # Stop status bar
+        kill $STATUS_PID 2>/dev/null || true
+        clear_status
+    fi
+
+    if [ "$VERBOSE" = true ]; then
+        echo -e "\033[32m==================================================================\033[0m"
+        echo -e "\033[32m== REVIEWING WORK (backgrounded)\033[0m"
+        echo -e "\033[32m==================================================================\033[0m"
+    fi
 
     # run the static code reviewer (codex can't do the git push part yet, so we need to follow up with claude after)
     # also run it in the background because it's very slow
@@ -238,16 +445,24 @@ If you have any questions of the user for the future, you can add them to QUESTI
 If you have any ideas for the future, you can add them to IDEAS.md.
 " > $LOGFILE-reviewer) &
     else
-        echo "Warning: codex not found, skipping background code review"
+        if [ "$VERBOSE" = true ]; then
+            echo "Warning: codex not found, skipping background code review"
+        fi
         echo "Codex not available, skipping static code review" > $LOGFILE-reviewer
     fi
 
-    echo -e "\033[32m==================================================================\033[0m"
-    echo -e "\033[32m== REVIEWING/TESTING/COMMITTING WORK\033[0m"
-    echo -e "\033[32m==================================================================\033[0m"
+    if [ "$VERBOSE" = true ]; then
+        echo -e "\033[32m==================================================================\033[0m"
+        echo -e "\033[32m== REVIEWING/TESTING/COMMITTING WORK\033[0m"
+        echo -e "\033[32m==================================================================\033[0m"
+    fi
 
-    # run the reviewer/tester
-    time claude --model $CLAUDE_MODEL --dangerously-skip-permissions -p "
+    # Start status monitoring for review phase
+    REVIEW_START_TIME=$(date +%s)
+    
+    if [ "$VERBOSE" = true ]; then
+        # run the reviewer/tester
+        time claude --model $CLAUDE_MODEL --dangerously-skip-permissions -p "
 You are an expert megathinker static code reviewer tasked with thoroughly examining a developer's work on a specific task. Your goal is to ensure the task is complete and meets high-quality standards. 
 
 Here is the task the developer has completed:
@@ -312,6 +527,86 @@ Actions Taken:
 
 Please proceed with your thorough code review and analysis. Your final output should consist only of the review summary and should not duplicate or rehash any of the work you did in the thinking block.
 " | tee >(cat > $LOGFILE-tester)
+    else
+        # Non-verbose mode - show status bar and suppress output
+        {
+            while true; do
+                show_status "${ACTIVITY_PREFIX}Reviewing and testing..." "$REVIEW_START_TIME"
+                sleep 1
+            done
+        } &
+        STATUS_PID=$!
+        
+        claude --model $CLAUDE_MODEL --dangerously-skip-permissions -p "
+You are an expert megathinker static code reviewer tasked with thoroughly examining a developer's work on a specific task. Your goal is to ensure the task is complete and meets high-quality standards. 
+
+Here is the task the developer has completed:
+
+<task_description>
+${nexttask}
+</task_description>
+
+To conduct your review, you have access to the following related documents:
+- BRIEF.md
+- docs/PLAN.md
+- docs/QUESTIONS.md
+- docs/CLAUDE-NOTES.md
+- README.md
+
+The developer's notes are available in a file named ${LOGFILE}-developer.
+
+Instructions for your review process:
+
+1. Carefully read and understand the task description.
+2. Review the developer's notes, but do not trust them implicitly.
+3. Examine the code and build/test results independently.
+4. Look for common 'cheating' patterns, including but not limited to:
+   - Disabling or ignoring unit tests
+   - Excluding files from compilation
+   - Redefining the plan to skip challenging tasks
+   - Using silent exception handlers that return fallback values
+   - Implementing try/catch blocks that log warnings but continue with empty/default data
+   - Catching integration failures and returning mock responses
+5. Stay on the current git branch, as long as it's a proper feature branch.
+6. If the task is incomplete or unsatisfactory, update docs/PLAN.md with detailed suggestions for the developer to complete the task properly.
+7. If you have questions for future consideration, add them to docs/QUESTIONS.md.
+8. If you have ideas for future improvements, add them to docs/IDEAS.md.
+
+Before providing your final review, please break down your review process and show your thought process inside <code_review_process> tags in your thinking block:
+
+1. Summarize the task description in your own words.
+2. List out the key documents you need to review.
+3. For each document, note down relevant quotes or information that pertain to the task.
+4. Explicitly look for any 'cheating' patterns and list any that you find.
+5. Consider arguments for and against the task being complete and of satisfactory quality.
+
+This will ensure a thorough and careful examination of the developer's work. It's OK for this section to be quite long.
+
+After your analysis, provide a summary of your findings and any necessary actions in the following format:
+
+<review_summary>
+Task Status: [Complete/Incomplete]
+Quality Assessment: [Satisfactory/Unsatisfactory]
+
+Key Findings:
+1. [Finding 1]
+2. [Finding 2]
+...
+
+Actions Taken:
+- [Action 1, e.g., 'Updated PLAN.md with suggestions for improvement']
+- [Action 2, e.g., 'Added question to QUESTIONS.md']
+...
+
+</review_summary>
+
+Please proceed with your thorough code review and analysis. Your final output should consist only of the review summary and should not duplicate or rehash any of the work you did in the thinking block.
+" > $LOGFILE-tester 2>&1
+        
+        # Stop status bar
+        kill $STATUS_PID 2>/dev/null || true
+        clear_status
+    fi
 
     # Check if verifier has confirmed all tasks are truly complete
     set +e
@@ -325,7 +620,12 @@ Please proceed with your thorough code review and analysis. Your final output sh
     ITERATION_END_TIME=$(date +%s)
     ITERATION_DURATION=$((ITERATION_END_TIME - ITERATION_START_TIME))
     
-    echo -e "\033[36mIteration $LOOP_COUNTER completed in ${ITERATION_DURATION}s\033[0m"
+    if [ "$VERBOSE" = false ]; then
+        # Show completion summary in non-verbose mode
+        echo -e "\033[32m✓ Iteration $LOOP_COUNTER completed (${ITERATION_DURATION}s)\033[0m"
+    else
+        echo -e "\033[36mIteration $LOOP_COUNTER completed in ${ITERATION_DURATION}s\033[0m"
+    fi
     
     # Check if iteration was suspiciously fast (likely failure mode)
     if [ $ITERATION_DURATION -lt $MIN_ITERATION_TIME ]; then

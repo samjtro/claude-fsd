@@ -17,9 +17,10 @@ claude-fsd plan-gen     # Generate new project plan
 claudefsd               # Alias for claude-fsd
 
 # Direct agent execution (for advanced users)
-claudefsd-dev           # Direct development agent execution (continuous loop)
-claudefsd-analyze-brief # Generate questions from BRIEF.md (uses opus model)
-claudefsd-create-plan   # Create development plan from answered questions (uses opus model)
+claudefsd-dev [--verbose]   # Direct development agent execution (continuous loop)
+                            # --verbose: Show full Claude Code logs instead of status bar
+claudefsd-analyze-brief     # Generate questions from BRIEF.md (uses opus model)
+claudefsd-create-plan       # Create development plan from answered questions (uses opus model)
 claudefsd-check-dependencies # Verify required tools are available
 
 # Project monitoring and control

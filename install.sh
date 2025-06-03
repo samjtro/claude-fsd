@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Claude FSD Bootstrap Script
-# Installs everything needed to run claude-fsd from source including optional Codex integration
+# Claude FSD Install Script
+# Fresh installation of claude-fsd from source including optional Codex integration
 
 set -e
 
@@ -312,7 +312,7 @@ setup_claude_fsd() {
         
         # Add to shell config
         echo "" >> "$shell_config"
-        echo "# Claude FSD - added by bootstrap script" >> "$shell_config"
+        echo "# Claude FSD - added by install script" >> "$shell_config"
         echo "export PATH=\"$script_dir/bin:\$PATH\"" >> "$shell_config"
         
         print_success "Added to $shell_config"
@@ -410,6 +410,24 @@ EOF
     print_info "Restart your shell or run: source ~/.claude-fsd-aliases"
 }
 
+# Function to save installation info
+save_installation_info() {
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local version_file="$HOME/.claude-fsd-version"
+    local current_commit=""
+    
+    # Get current commit hash
+    if [ -d "$script_dir/.git" ]; then
+        current_commit=$(cd "$script_dir" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    else
+        current_commit="source"
+    fi
+    
+    # Save current version
+    echo "$current_commit" > "$version_file"
+    print_info "Installation info saved (version: $current_commit)"
+}
+
 # Function to run dependency check
 verify_installation() {
     print_info "Verifying installation..."
@@ -422,14 +440,13 @@ verify_installation() {
 
 # Main installation flow
 main() {
-    echo -e "${BLUE}Claude FSD Bootstrap Script${NC}"
-    echo -e "${BLUE}===========================${NC}"
+    echo -e "${BLUE}Claude FSD Install Script${NC}"
+    echo -e "${BLUE}=========================${NC}"
     echo ""
     
-    print_info "This script will set up claude-fsd from source (no dependencies required!)"
-    echo ""
-    
+    print_info "Fresh installation of claude-fsd from source"
     print_success "Claude-fsd is pure bash - no Node.js required for core functionality"
+    echo ""
     
     # Install Claude CLI
     install_claude_cli
@@ -442,7 +459,7 @@ main() {
         setup_codex_cli
     else
         print_warning "Skipping Codex CLI setup"
-        print_info "You can set it up later by re-running this script"
+        print_info "You can set it up later by running reinstall.sh"
     fi
     
     # Setup claude-fsd
@@ -459,12 +476,16 @@ main() {
         fi
     fi
     
+    # Save installation info
+    echo ""
+    save_installation_info
+    
     # Verify installation
     echo ""
     verify_installation
     
     echo ""
-    print_success "Bootstrap complete!"
+    print_success "Installation complete!"
     echo ""
     print_info "Next steps:"
     echo "  1. Restart your shell or run: source ~/.zshrc"
@@ -475,6 +496,8 @@ main() {
     echo "  claude-fsd        - Interactive setup mode"
     echo "  claude-fsd dev    - Jump to development mode"
     echo "  claudefsd-dev     - Direct development loop"
+    echo ""
+    print_info "For updates, run: ./reinstall.sh"
     echo ""
 }
 

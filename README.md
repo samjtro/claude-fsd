@@ -6,8 +6,6 @@ Automated project development - let AI build your project while you sleep.
 
 claude-fsd is an automated development system that runs continuous development cycles without constant supervision. Write a brief description of what you want, answer some clarifying questions, then let it build your project autonomously.
 
-Think of it like **Tesla FSD for code** - it handles the driving, but you should keep an eye on it and occasionally take the wheel when needed.
-
 ### How the Agent System Works
 
 The system operates with multiple specialized AI agents working together:

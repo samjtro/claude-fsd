@@ -251,7 +251,8 @@ else
             echo "Commands:"
             echo "  analyze-brief - Analyze brief and generate questions"
             echo "  create-plan   - Create plan from answered questions"
-            echo "  dev           - Run development mode"
+            echo "  dev [--verbose] - Run development mode"
+            echo "                    --verbose: Show all Claude Code logs instead of status bar"
             echo
             echo "Run without arguments for interactive mode."
             exit 1
